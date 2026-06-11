@@ -1,0 +1,40 @@
+# ===== НАСТРОЙКИ =====
+$ProcessName = "svchost"          # Имя процесса без .exe
+$HandleLimit = 15000              # Порог хэндлов
+$LogFile = "C:\Logs\HandleKiller.log"
+
+# Создаем папку для логов, если нет
+$LogDir = Split-Path $LogFile -Parent
+if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+
+# ===== БЕСКОНЕЧНЫЙ ЦИКЛ =====
+while ($true) {
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    
+    # Получаем все процессы с нужным именем
+    $processes = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue
+    
+    foreach ($proc in $processes) {
+        try {
+            $handles = $proc.HandleCount
+            
+            if ($handles -gt $HandleLimit) {
+                # Записываем в лог
+                "$timestamp — УБИВАЮ: $($proc.Name).exe PID=$($proc.Id) Handles=$handles (Лимит: $HandleLimit)" | Out-File $LogFile -Append
+                
+                # Убиваем процесс
+                Stop-Process -Id $proc.Id -Force
+                
+                # Ждем полсекунды, чтобы система выдохнула
+                Start-Sleep -Milliseconds 500
+            }
+        }
+        catch {
+            # Процесс мог умереть сам, пока мы проверяли
+            "$timestamp — ОШИБКА с PID=$($proc.Id): $_" | Out-File $LogFile -Append
+        }
+    }
+    
+    # Ждем 3 секунды до следующей проверки
+    Start-Sleep -Seconds 3
+}
