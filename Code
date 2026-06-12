@@ -1,40 +1,49 @@
-# ===== НАСТРОЙКИ =====
-$ProcessName = "svchost"          # Имя процесса без .exe
-$HandleLimit = 15000              # Порог хэндлов
-$LogFile = "C:\Logs\HandleKiller.log"
+$ProcessName = "svchost"
+$HandleLimit = 15000
 
-# Создаем папку для логов, если нет
-$LogDir = Split-Path $LogFile -Parent
-if (!(Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
-
-# ===== БЕСКОНЕЧНЫЙ ЦИКЛ =====
 while ($true) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     
-    # Получаем все процессы с нужным именем
-    $processes = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue
+    # Первая выборка: все процессы с превышением лимита
+    $firstSnapshot = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | Where-Object { $_.HandleCount -gt $HandleLimit }
     
-    foreach ($proc in $processes) {
-        try {
-            $handles = $proc.HandleCount
-            
-            if ($handles -gt $HandleLimit) {
-                # Записываем в лог
-                "$timestamp — УБИВАЮ: $($proc.Name).exe PID=$($proc.Id) Handles=$handles (Лимит: $HandleLimit)" | Out-File $LogFile -Append
-                
-                # Убиваем процесс
-                Stop-Process -Id $proc.Id -Force
-                
-                # Ждем полсекунды, чтобы система выдохнула
-                Start-Sleep -Milliseconds 500
+    if ($firstSnapshot) {
+        # Запоминаем ID подозрительных процессов
+        $firstIDs = $firstSnapshot | Select-Object -ExpandProperty Id
+        $firstInfo = $firstSnapshot | ForEach-Object { "PID=$($_.Id) Handles=$($_.HandleCount)" }
+        Write-Host "$timestamp — НАЙДЕНЫ: $($firstInfo -join ', ')" -ForegroundColor Yellow
+        
+        # Ждем 10 секунд
+        Start-Sleep -Seconds 10
+        
+        # Вторая выборка: снова ищем процессы с превышением
+        $secondSnapshot = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | Where-Object { $_.HandleCount -gt $HandleLimit }
+        $secondIDs = $secondSnapshot | Select-Object -ExpandProperty Id
+        
+        # Ищем пересечения (процессы, которые были в обоих выборках)
+        $toKill = $firstIDs | Where-Object { $_ -in $secondIDs }
+        
+        if ($toKill) {
+            foreach ($id in $toKill) {
+                try {
+                    $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+                    if ($proc) {
+                        $killTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        Write-Host "$killTimestamp — УБИВАЮ (висел 10+ сек): PID=$($proc.Id) Handles=$($proc.HandleCount)" -ForegroundColor Red
+                        Stop-Process -Id $proc.Id -Force
+                        Start-Sleep -Milliseconds 500
+                    }
+                }
+                catch {
+                    $killTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    Write-Host "$killTimestamp — ОШИБКА при убийстве PID=$id : $_" -ForegroundColor Magenta
+                }
             }
         }
-        catch {
-            # Процесс мог умереть сам, пока мы проверяли
-            "$timestamp — ОШИБКА с PID=$($proc.Id): $_" | Out-File $LogFile -Append
+        else {
+            Write-Host "$timestamp — Процессы сбросили хэндлы за 10 сек, убийство отменено" -ForegroundColor Green
         }
     }
     
-    # Ждем 3 секунды до следующей проверки
     Start-Sleep -Seconds 3
 }
